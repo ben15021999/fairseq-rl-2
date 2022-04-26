@@ -133,3 +133,5 @@ experimental/*
 /datasets/
 /mosesdecoder/
 /pretrained-LMs/
+results/
+data/

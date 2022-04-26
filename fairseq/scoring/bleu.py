@@ -46,12 +46,12 @@ class SacrebleuScorer(object):
         self.sys.append(pred)
 
     def score(self, order=4):
-        return self.result_string(order).score
+        return self.result_string(order)
 
     def result_string(self, order=4):
         if order != 4:
             raise NotImplementedError
-        return self.sacrebleu.corpus_bleu(self.sys, [self.ref]).format()
+        return self.sacrebleu.corpus_bleu(self.sys, [self.ref]).score
 
 
 @register_scoring("bleu")
