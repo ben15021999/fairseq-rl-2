@@ -1,5 +1,5 @@
 TEXT=data
-CUDA_VISIBLE_DEVICES="" python fairseq_cli/train.py \
+CUDA_VISIBLE_DEVICES=0 python fairseq_cli/train.py \
     data-bin/data.tokenized.en-vi \
     --lr 1e-04 \
     -s en \
@@ -9,15 +9,16 @@ CUDA_VISIBLE_DEVICES="" python fairseq_cli/train.py \
     --clip-norm 0.0 \
     --dropout 0.3 \
     --arch transformer \
-    --save-dir checkpoints/envi_combine_3 \
-    --save-interval-updates 2000 \
+    --save-dir checkpoints/envi_baseline \
     --lr-scheduler inverse_sqrt \
     --warmup-init-lr '1e-07' \
     --min-lr '1e-09' \
-    --mle-weight 0.3 \
     --adam-betas "(0.9, 0.998)" \
     --weight-decay 0.0001 \
-    --criterion reinforce_shaping \
+    --bos [unused0] \
+    --pad [PAD] \
+    --eos [unused1] \
+    --unk [UNK] \
     --tgtdict_add_sentence_limit_words_after \
     --eval-bleu \
     --eval-bleu-args '{"beam": 4}' \
@@ -27,5 +28,4 @@ CUDA_VISIBLE_DEVICES="" python fairseq_cli/train.py \
     --best-checkpoint-metric bleu \
     --maximize-best-checkpoint-metric \
     --patience 3 \
-    --finetune-from-model checkpoints/envi/checkpoint_best.pt \
-    --batch-size 16
+    --batch-size 32

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from fairseq.bert_score import BERTScorer, score
 
 from collections import defaultdict
-from fairseq import utils
+from fairseq import utils, search
 
 from fairseq.criterions import FairseqCriterion, register_criterion
 from torch.distributions import Categorical
@@ -58,24 +58,25 @@ class ReinforceNMT(FairseqCriterion):
         self.tgt_dict = task.tgt_dict
         self.max_order = max_order
         # self.bert_scorer = BERTScorer(self.bert_model)  # , device='cpu')
-        self.scorer = bleu.SacrebleuScorer()
+        self.scorer = bleu.Scorer(pad=self.tgt_dict.pad(), eos=self.tgt_dict.eos(), unk=self.tgt_dict.unk())
         # self.pad_token_id = self.bert_scorer._tokenizer.convert_tokens_to_ids('[PAD]')
 
         # File
-        # self.loss_stats_file = open('track_loss_prob_fbert_baseline.txt', 'w')
-        # self.loss_stats_file.write('loss\tprob\tfbert\n')
+        self.loss_stats_file = open('track_loss_prob_fbert_baseline.txt', 'w')
+        self.loss_stats_file.write('loss\tprob\tfbert\n')
 
     @staticmethod
     def add_args(parser):
         """Add criterion-specific arguments to the parser."""
         # fmt: off
-        parser.add_argument('--max-len-decoding', default=50, type=int, metavar='D',
-                            help='maximum length when decoding a sentence.')
-        parser.add_argument('--max-order', type=int, default=4, help='Order for bleu score (default: 4)')
+        parser.add_argument('--mle-weight', default='0.3', type=float, metavar='D',
+                            help='MLE weight')
 
     def reword(self, reference_string, predicted_string):
-        self.scorer.reset(one_init=False)
-        self.scorer.add_string(reference_string, predicted_string)
+        self.scorer.reset(one_init=True)
+        # print("ref", reference_string)
+        # print("pred", predicted_string)
+        self.scorer.add(reference_string.type(torch.IntTensor), predicted_string.type(torch.IntTensor))
         return self.scorer.score(self.max_order)
 
     def array_to_sentence(self, array):
@@ -98,7 +99,7 @@ class ReinforceNMT(FairseqCriterion):
         # Forward encoder
         encoder_out = model.encoder(
             sample['net_input']['src_tokens'], src_lengths=sample['net_input']['src_lengths'],
-            return_all_hiddens=True
+            # return_all_hiddens=True
         )
 
         # Decode translations sequentially (greedy decoding)
@@ -108,11 +109,11 @@ class ReinforceNMT(FairseqCriterion):
         # model.train()
         # print(pred_toks)
         # print(lprob_toks)
-        predicted_output = [self.array_to_sentence(pred) for pred in pred_toks]
-        reference_output = [self.array_to_sentence(ref) for ref in target]
+        # predicted_output = [self.array_to_sentence(pred) for pred in pred_toks]
+        # reference_output = [self.array_to_sentence(ref) for ref in target]
 
-        predicted_string = [' '.join(pred).replace('@@ ', '') for pred in predicted_output]
-        reference_string = [' '.join(ref).replace('@@ ', '') for ref in reference_output]
+        # predicted_string = [' '.join(pred).replace('@@ ', '') for pred in predicted_output]
+        # reference_string = [' '.join(ref).replace('@@ ', '') for ref in reference_output]
         # print(reference_string)
         # print(model.decoder.dictionary.__getitem__(self.pad_token_id))
         # Calculate entropy
@@ -178,7 +179,7 @@ class ReinforceNMT(FairseqCriterion):
         # print(rewards_baseline)
         # Detach rewards from the loss function
         # rewards = torch.tensor([[self.reword(ref_i, pred_i) for ref_i, pred_i in zip(target, pred_toks)]])
-        rewards = torch.tensor([[self.reword(ref_i, pred_i) for ref_i, pred_i in zip(reference_string, predicted_string)]])
+        rewards = torch.tensor([[self.reword(ref_i, pred_i) for ref_i, pred_i in zip(target, pred_toks)]])
         # print(rewards)
         # rewards_baseline = torch.tensor([[self.reword(ref_i, base_i) for ref_i, base_i in zip(target, bas_toks)]])
 
@@ -198,6 +199,7 @@ class ReinforceNMT(FairseqCriterion):
         # print(rewards_detached)
         loss = -lprobs_added * utils.move_to_cuda(rewards_detached)
         loss = loss.sum()
+        # print(loss)
 
         # Calculate accuracy
         # acc_target = target.view(-1, 1).squeeze()
@@ -217,8 +219,8 @@ class ReinforceNMT(FairseqCriterion):
             'f_bert': f_bert.data
         }
 
-        # self.loss_stats_file.write(str(loss.detach().cpu().numpy()) + '\t' + str(lprobs_avg.detach().cpu().numpy()) + '\t' +
-        #                            str(f_bert_mean.detach().cpu().numpy()) + '\n')
+        self.loss_stats_file.write(str(loss.detach().cpu().numpy()) + '\t' + str(lprobs_avg.detach().cpu().numpy()) + '\t' +
+                                   str(f_bert_mean.detach().cpu().numpy()) + '\n')
 
         return loss, sample_size, logging_output
 
@@ -245,8 +247,7 @@ def _forward_one(model, encoded_source, tokens, incremental_states=None, tempera
                  return_logits=False, **decoder_kwargs):
     # print(return_logits)
     if incremental_states is not None:
-        decoder_out = list(model.decoder(tokens, encoded_source, incremental_state=incremental_states,
-                                         **decoder_kwargs))
+        decoder_out = list(model.decoder(tokens, encoded_source, incremental_state=incremental_states))
     else:
         decoder_out = list(model.decoder(tokens, encoded_source, **decoder_kwargs))
     decoder_out[0] = decoder_out[0][:, -1:, :].clone()
@@ -278,8 +279,8 @@ def sequential_decoding(model, encoded_source, max_len_decoding, device):
     pad_token_id = torch.tensor(model.decoder.dictionary.pad()).to(device)
     context_pred = torch.tensor([model.decoder.dictionary.eos()] * batch_size).to(device).unsqueeze(1)
     # context_bas = torch.tensor([model.decoder.dictionary.eos()] * batch_size).to(device).unsqueeze(1)
-    # print(context)
-    # states = {}
+    # print(context_pred)
+    states = {}
     lprob_toks_pred = 0
     all_lprobs_pred = []
     masking_matrix_pred = []
@@ -292,7 +293,7 @@ def sequential_decoding(model, encoded_source, max_len_decoding, device):
     for tstep in range(max_len_decoding):
         # We need 2 sampling techniques
         # lprobs_pred, attn_t_pred = _forward_one(model, encoded_source, context_pred, incremental_states=states, return_logits=True)
-        logits, attn_t_pred = _forward_one(model, encoded_source, context_pred, return_logits=True)
+        # logits, attn_t_pred = _forward_one(model, encoded_source, context_pred, incremental_states=states, return_logits=True)
         # lprobs_bas, attn_t_bas = _forward_one(model, encoded_source, context_bas, incremental_states=states)?
         # lprobs[:, pad_token_id] = -math.inf  # never select pad  (MAYBE I CAN ADD MIN LENGTH?)
         # print(lprobs.size())
@@ -300,13 +301,15 @@ def sequential_decoding(model, encoded_source, max_len_decoding, device):
         # pred_tok_bas = lprobs_bas.argmax(dim=1, keepdim=True)
         # lprob_tok_bas = torch.gather(lprobs_bas, dim=1, index=pred_tok_bas)
         # Sampling
+        logits, _ = model.decoder(context_pred, encoded_source, incremental_state=states)
         dist = Categorical(logits=logits)
         # pred_tok_pred = dist.sample().unsqueeze(dim=1)
         next_word = dist.sample()
+        print(next_word)
         # lprob_tok_pred = torch.gather(lprobs_pred, dim=1, index=pred_tok_pred)
         lprob_tok_pred = dist.log_prob(next_word)
         # print(lprob_tok_pred)
-        next_word = next_word.unsqueeze(dim=1)
+        # next_word = next_word.unsqueeze(dim=1)
         # print(lprob_tok.size())
         # print(lprob_tok_index.size())
         # Check if predicted token is <eos>
@@ -365,7 +368,7 @@ def sequential_decoding(model, encoded_source, max_len_decoding, device):
     # BASELINE
     # masking_matrix_bas = torch.cat(masking_matrix_bas, 1)
     # pred_toks_bas = torch.cat(pred_toks_bas, 1)
-
+    print(context_pred)
     # Apply masking (padding tokens after the <eos> token.)
     pred_toks_pred[masking_matrix_pred == 1.0] = pad_token_id
     # pred_toks_bas[masking_matrix_bas == 1.0] = pad_token_id

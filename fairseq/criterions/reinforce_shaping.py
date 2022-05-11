@@ -84,6 +84,7 @@ class ReinforceShaping(FairseqCriterion):
         search_strategy = (
             search.Sampling(tgt_dict, sampling_topk=sample_beam) if self.multinomial_sample_train else None
         )
+        # max_len = 100
         translator = SequenceGenerator([model], tgt_dict=tgt_dict,
                                        beam_size=sample_beam, min_len=1, search_strategy=search_strategy)
         translator.cuda()
@@ -92,7 +93,6 @@ class ReinforceShaping(FairseqCriterion):
 
         s = utils.move_to_cuda(sample)
         input = s['net_input']
-        # max_len = 200
         with torch.no_grad():
             hypos = translator.generate(
                 [model],
@@ -115,7 +115,7 @@ class ReinforceShaping(FairseqCriterion):
                               ignore_index=self.padding_idx, reduce=reduce)
         mle_tokens = sample['ntokens']
         avg_mle_loss = mle_loss / mle_tokens
-        print('avg_mle_loss:', avg_mle_loss)
+        # print('avg_mle_loss:', avg_mle_loss)
 
         # RL loss
         batch_rl_loss = 0
@@ -162,11 +162,11 @@ class ReinforceShaping(FairseqCriterion):
             batch_rl_loss += rl_loss
         avg_rl_loss = batch_rl_loss / batch_tokens
         self.rl_weight = 1.0 - self.mle_weight
-        with open('./results/reward/v0_m'+str(self.mle_weight)+'r'+str(self.rl_weight)+'_lr'+str(self.lr)+'_r.csv','w', newline='') as csv_file:
+        with open('./results/reward/v0_m'+str(self.mle_weight)+'r'+str(self.rl_weight)+'_lr'+str(self.lr)+'_r.csv', 'a', newline='') as csv_file:
             csv_writer = csv.writer(csv_file)
             for r in result:
                 csv_writer.writerow(r)
-        print('avg_rl_loss:', avg_rl_loss)
+        # print('avg_rl_loss:', avg_rl_loss)
         if self.mle_weight:
             assert self.rl_weight
             total_loss = self.mle_weight * avg_mle_loss + self.rl_weight * avg_rl_loss
@@ -179,8 +179,9 @@ class ReinforceShaping(FairseqCriterion):
             'ntokens': total_tokens,
             'sample_size': total_tokens,
         }
-        print('total: ',total_loss)
-        with open('./results/loss/v0_m'+str(self.mle_weight)+'r'+str(self.rl_weight)+'_lr'+str(self.lr)+'_l.csv','w', newline='') as csv_file:
+        # print('total: ',total_loss)
+        # print(total_tokens)
+        with open('./results/loss/v0_m'+str(self.mle_weight)+'r'+str(self.rl_weight)+'_lr'+str(self.lr)+'_l.csv', 'a', newline='') as csv_file:
             csv_writer = csv.writer(csv_file)
             csv_writer.writerow((avg_mle_loss.item(), avg_rl_loss.item(), total_loss.item(), total_tokens))
         return total_loss, total_tokens, logging_output
@@ -246,8 +247,7 @@ class ReinforceShaping(FairseqCriterion):
         translation_filt = [token for token in translation_array if token not in [0, 1, 2]]
 
         bleu_scores, _, _, _ = self._bleu(reference_filt, translation_filt, max_order)
-
-        reward = bleu_scores[:, max_order - 1]
+        reward = bleu_scores[:, max_order - 1].copy()
         total_result = reward[-1]
         return total_result  # results are total, scalar
 
@@ -260,8 +260,9 @@ class ReinforceShaping(FairseqCriterion):
         translation_filt = [token for token in translation_array if token not in [0, 1, 2]]
 
         bleu_scores, _, _, _ = self._bleu(reference_filt, translation_filt, max_order)
-
+        # print(bleu_scores)
         reward = bleu_scores[:, max_order - 1]
+        # print(reward)
         # delta rewards
         reward[1:] = reward[1:] - reward[:-1]
         pos = -1
@@ -282,10 +283,17 @@ class ReinforceShaping(FairseqCriterion):
         loss_sum = sum(log.get('loss', 0) for log in logging_outputs)
         ntokens = sum(log.get('ntokens', 0) for log in logging_outputs)
         sample_size = sum(log.get('sample_size', 0) for log in logging_outputs)
-        agg_output = {
-            'loss': loss_sum / sample_size / math.log(2),
-            'sample_size': sample_size,
-        }
+        metrics.log_scalar(
+            "loss", loss_sum / sample_size / math.log(2), sample_size, round=3
+        )
         if sample_size != ntokens:
-            agg_output['nll_loss'] = loss_sum / ntokens / math.log(2)
-        return agg_output
+            metrics.log_scalar(
+                "nll_loss", loss_sum / ntokens / math.log(2), ntokens, round=3
+            )
+            metrics.log_derived(
+                "ppl", lambda meters: utils.get_perplexity(meters["nll_loss"].avg)
+            )
+        else:
+            metrics.log_derived(
+                "ppl", lambda meters: utils.get_perplexity(meters["loss"].avg)
+            )
